@@ -2,7 +2,36 @@
 description: Run the reviewer governance council to audit codebase or spec compliance.
 ---
 <!-- scaffolded by uf vdev -->
-# Command: /review-council
+# Command: /uf.review-council
+
+> **Session-resume guard**: If this session was resumed
+> from compressed context, re-read this entire template
+> before continuing. Do NOT infer step completion from
+> compressed summaries. Check the EXECUTION CHECKLIST
+> below for actual completion state. If the checklist
+> shows unchecked items, resume from the first unchecked
+> item. When in doubt, re-read — false re-reads are
+> harmless; skipping steps due to stale context causes
+> incomplete reviews or unauthorized actions.
+
+> **EXECUTION CHECKLIST** — Update each item using the
+> Edit tool as you complete it. Mark `[x]` when done.
+>
+> - [ ] Phase 1a: Pre-flight checks
+> - [ ] Phase 1b: Gaze quality analysis
+> - [ ] Phase 1c: Review context discovery
+> - [ ] Step 2: Divisor agent delegation (full branch diff)
+> - [ ] Step 3: Finding consolidation
+> - [ ] Step 4: Fix loop (iteration: _/3)
+> - [ ] Step 5: Iteration limit check
+> - [ ] Step 6: Final report
+> - [ ] Step 7a: PR detection
+> - [ ] Step 7b: Review state fetching
+> - [ ] Step 7c: Pre-posting checks
+> - [ ] Step 7d: Finding aggregation
+> - [ ] Step 7e: Inline comment preparation
+> - [ ] Step 7f: Human confirmation (MANDATORY GATE)
+> - [ ] Step 7g: Post review
 
 ## User Input
 
@@ -99,7 +128,7 @@ examining the current branch and workspace:
    > spec artifacts changed on branch
    > `opsx/documentation-accuracy`."
    >
-   > Use `/review-council code` or `/review-council specs`
+   > Use `/uf.review-council code` or `/uf.review-council specs`
    > to override.
 
 ---
@@ -187,6 +216,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
       them for inclusion in the final report (Step 6).
       Proceed to Phase 1b.
 
+   **Checkpoint**: Mark `Phase 1a` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
    #### Phase 1b -- Gaze Quality Analysis (conditional)
 
    a. Check if `gaze` is available:
@@ -211,6 +242,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
        > `go install github.com/unbound-force/gaze/cmd/gaze@latest`)."
 
       Proceed to step 2 without Gaze data.
+
+   **Checkpoint**: Mark `Phase 1b` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
 
    #### Phase 1c -- Discover Review Context (mandatory)
 
@@ -258,6 +291,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
       consistent with the `pre-flight` skill
       consumption pattern — no inline fallback.
 
+   **Checkpoint**: Mark `Phase 1c` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
 2. Delegate the review to all **discovered** reviewer agents in parallel using the Task tool. For each discovered agent, use the focus area from the Known Reviewer Roles reference table to provide targeted context. For any discovered agent not in the table, use a generic prompt: "Review the current changes for quality, correctness, and compliance. Return your verdict (APPROVE or REQUEST CHANGES) along with all findings."
 
    **CRITICAL — Review Scope Rule**: The review scope is
@@ -299,6 +334,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
 
    For each agent, instruct it to review the full branch diff (all changed files vs `main`) and return its verdict (**APPROVE** or **REQUEST CHANGES**) along with all findings.
 
+   **Checkpoint**: Mark `Step 2` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
 3. Collect all **REQUEST CHANGES** findings from the
    discovered reviewers. If all discovered reviewers
    return **APPROVE**, report the result and stop.
@@ -321,9 +358,15 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    Findings with independent root causes MUST remain
    separate even if they affect the same file.
 
+   **Checkpoint**: Mark `Step 3` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
 4. If there are **REQUEST CHANGES**, address the findings by making the necessary code fixes. Then re-run all discovered reviewers to verify the fixes. Repeat this loop until all discovered reviewers return **APPROVE** or the process has exceeded 3 iterations.
 
+   **Checkpoint**: Update `Step 4` iteration counter in the EXECUTION CHECKLIST (e.g., `iteration: 2/3`) using the Edit tool after each iteration.
+
 5. If 3 iterations are exceeded, ask the user whether to continue or stop.
+
+   **Checkpoint**: Mark `Step 5` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
 
 6. Provide a final report to the user:
    - **Discovery summary**: how many reviewer agents were discovered, which were invoked, and which known reviewer roles were absent (informational, non-blocking)
@@ -355,6 +398,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    - What was fixed
    - If stopped early, the current set of outstanding **REQUEST CHANGES**
    - If there were persistent circular **REQUEST CHANGES** (fixes for one reviewer cause failures in another), report those with additional detail so the user can make an informed decision
+
+   **Checkpoint**: Mark `Step 6` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
 
 7. **GitHub Review Posting (optional, Code Review Mode only)**
 
@@ -397,6 +442,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
       > "No open PR found for this branch — review
       > remains local only."
 
+   **Checkpoint**: Mark `Step 7a` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
    #### Step 7b -- Review State Fetching
 
    Fetch existing review state to prevent duplicate
@@ -431,6 +478,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    error, skip the sub-step, proceed. All review state
    data is additive context — its absence reduces only
    deduplication accuracy.
+
+   **Checkpoint**: Mark `Step 7b` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
 
    #### Step 7c -- Pre-posting Checks
 
@@ -512,6 +561,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    > This APPROVE may not satisfy branch protection if
    > this account is not listed in CODEOWNERS."
 
+   **Checkpoint**: Mark `Step 7c` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
    #### Step 7d -- Multi-Persona Finding Aggregation
 
    Assemble a single review body from all Divisor persona
@@ -561,6 +612,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    Include: "Full findings available in the terminal
    report."
 
+   **Checkpoint**: Mark `Step 7d` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
    #### Step 7e -- Inline Comment Preparation
 
    For findings mapped to specific files and line ranges
@@ -600,7 +653,24 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    Body: <comment text>
    ```
 
+   **Checkpoint**: Mark `Step 7e` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
+
    #### Step 7f -- Verdict Mapping and Human Confirmation
+
+   >>> MANDATORY GATE: HUMAN CONFIRMATION REQUIRED <<<
+
+   **Session-resume guard**: If this session was resumed
+   from compressed context, or if you cannot verify that
+   the human explicitly confirmed the review in the
+   current uncompressed conversation history, you MUST
+   re-present the review content (verdict + all comments)
+   and obtain fresh confirmation via the
+   **AskUserQuestion tool** before posting. Do NOT rely
+   on confirmation recorded in compressed context. When
+   in doubt, re-confirm — false re-confirmation is
+   harmless; posting without consent is a violation.
+   Check the EXECUTION CHECKLIST: Step 7f MUST be
+   unchecked before proceeding with confirmation.
 
    Map the council verdict to the GitHub API event type:
 
@@ -642,7 +712,11 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    human confirmation via the **AskUserQuestion tool**.
    Always show the exact content (verdict type + all
    comments) that will be posted and wait for the user
-   to select a confirming option.
+   to select a confirming option. Mark `Step 7f` as
+   `[x]` in the EXECUTION CHECKLIST only AFTER the
+   human confirms.
+
+   >>> END MANDATORY GATE <<<
 
    #### Step 7g -- Post Review
 
@@ -711,6 +785,8 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    value for auto-detected PRs without requiring a
    Phase 1c re-run. If any `gh issue view` call fails,
    skip that issue silently.
+
+   **Checkpoint**: Mark `Step 7g` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
 
 ---
 

@@ -329,7 +329,7 @@ async function executeFixture(
 
   // Create and start driver
   const driver = new OpencodeDriver({
-    projectDir: process.cwd(),
+    projectDir: fixtureDir,
     onEvent: (event: any) => {
       tokenCapture.handleEvent(event)
       // Capture assistant messages for judge transcript

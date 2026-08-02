@@ -1,7 +1,7 @@
 /**
  * SQLite storage layer for eval run results.
  *
- * Uses better-sqlite3 for synchronous, WAL-mode SQLite access.
+ * Uses bun:sqlite for synchronous, WAL-mode SQLite access.
  * The database is an artifact (not committed to git) — the
  * committed reference point is baseline.json.
  *
@@ -9,7 +9,7 @@
  * (parameterized queries for external input).
  */
 
-import Database from "better-sqlite3"
+import { Database } from "bun:sqlite"
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -65,9 +65,9 @@ export interface BaselineEntry {
  * @param dbPath - File path for the SQLite database.
  * @returns The initialized Database instance.
  */
-export function initDb(dbPath: string): Database.Database {
+export function initDb(dbPath: string): Database {
   const db = new Database(dbPath)
-  db.pragma("journal_mode = WAL")
+  db.exec("PRAGMA journal_mode = WAL")
 
   db.exec(`CREATE TABLE IF NOT EXISTS runs (
     run_id                TEXT PRIMARY KEY,
@@ -117,7 +117,7 @@ export function initDb(dbPath: string): Database.Database {
  * @param db - The initialized Database instance.
  * @param run - The run record to insert.
  */
-export function insertRun(db: Database.Database, run: Run): void {
+export function insertRun(db: Database, run: Run): void {
   const stmt = db.prepare(`
     INSERT INTO runs (
       run_id, timestamp, fingerprint, repo, git_sha, git_branch,
@@ -127,15 +127,20 @@ export function insertRun(db: Database.Database, run: Run): void {
       turns, tool_calls_count, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, diff_bytes, workdir_diff
     ) VALUES (
-      @run_id, @timestamp, @fingerprint, @repo, @git_sha, @git_branch,
-      @command_name, @task_id, @task_version, @rubric_version, @profile_id,
-      @model, @opencode_version, @exit_status, @error_message,
-      @composite_score, @scores_json, @cost_usd, @duration_s,
-      @turns, @tool_calls_count, @input_tokens, @output_tokens,
-      @cache_read_tokens, @cache_creation_tokens, @diff_bytes, @workdir_diff
+      $run_id, $timestamp, $fingerprint, $repo, $git_sha, $git_branch,
+      $command_name, $task_id, $task_version, $rubric_version, $profile_id,
+      $model, $opencode_version, $exit_status, $error_message,
+      $composite_score, $scores_json, $cost_usd, $duration_s,
+      $turns, $tool_calls_count, $input_tokens, $output_tokens,
+      $cache_read_tokens, $cache_creation_tokens, $diff_bytes, $workdir_diff
     )
   `)
-  stmt.run(run)
+  // bun:sqlite named parameters require $ prefix on keys
+  const params: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(run)) {
+    params[`$${key}`] = value
+  }
+  stmt.run(params as any)
 }
 
 /**
@@ -145,7 +150,7 @@ export function insertRun(db: Database.Database, run: Run): void {
  * @param fp - The fingerprint hash to query.
  * @returns Array of matching Run records, oldest first.
  */
-export function getRunsByFingerprint(db: Database.Database, fp: string): Run[] {
+export function getRunsByFingerprint(db: Database, fp: string): Run[] {
   const stmt = db.prepare(
     `SELECT * FROM runs WHERE fingerprint = ? ORDER BY timestamp ASC`,
   )
@@ -159,7 +164,7 @@ export function getRunsByFingerprint(db: Database.Database, fp: string): Run[] {
  * @param fp - The fingerprint hash to query.
  * @returns The latest Run record, or null if no runs exist for this fingerprint.
  */
-export function getLatestRun(db: Database.Database, fp: string): Run | null {
+export function getLatestRun(db: Database, fp: string): Run | null {
   const stmt = db.prepare(
     `SELECT * FROM runs WHERE fingerprint = ? ORDER BY timestamp DESC LIMIT 1`,
   )
@@ -178,7 +183,7 @@ export function getLatestRun(db: Database.Database, fp: string): Run | null {
  * @returns Array of matching Run records, newest first.
  */
 export function getRunHistory(
-  db: Database.Database,
+  db: Database,
   fp: string,
   limit = 10,
 ): Run[] {
@@ -197,7 +202,7 @@ export function getRunHistory(
  * @param db - The initialized Database instance.
  * @returns Array of distinct fingerprint hash strings.
  */
-export function getDistinctFingerprints(db: Database.Database): string[] {
+export function getDistinctFingerprints(db: Database): string[] {
   const stmt = db.prepare(`SELECT DISTINCT fingerprint FROM runs`)
   const rows = stmt.all() as Array<{ fingerprint: string }>
   return rows.map((r) => r.fingerprint)
@@ -211,7 +216,7 @@ export function getDistinctFingerprints(db: Database.Database): string[] {
  * @returns Map of fingerprint → BaselineEntry for the latest run of each fingerprint.
  */
 export function exportBaseline(
-  db: Database.Database,
+  db: Database,
 ): Record<string, BaselineEntry> {
   // Use a window function to get the latest run per fingerprint
   const stmt = db.prepare(`

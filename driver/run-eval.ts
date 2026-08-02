@@ -382,6 +382,7 @@ async function executeFixture(
 
   // Get token snapshot
   const tokens = tokenCapture.getSnapshot()
+  log(`[${fixtureName}] Tokens: cost=$${tokens.cost_usd.toFixed(4)} in=${tokens.input_tokens} out=${tokens.output_tokens} cache_r=${tokens.cache_read_tokens} cache_w=${tokens.cache_creation_tokens} turns=${tokens.turns} tools=${tokens.tool_calls_count}`)
 
   // Run judge if rubric exists (T029)
   let compositeScore: number | null = null

@@ -1,0 +1,140 @@
+# Reusable workflow for running opencode eval against fixtures.
+#
+# Consumer repos call this via workflow_call, providing fixture path,
+# baseline, model, and GCP credentials. The workflow handles all setup
+# (bun, opencode, GCP auth) and produces artifacts.
+#
+# Usage in consumer repo:
+#   jobs:
+#     eval:
+#       uses: jflowers/eval-infra/.github/workflows/reusable_opencode_eval.yml@main
+#       with:
+#         fixture-path: .eval/fixtures
+#       secrets:
+#         gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
+#         gcp_workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+
+name: Reusable OpenCode Eval
+
+on:
+  workflow_call:
+    inputs:
+      fixture-path:
+        description: 'Path to fixture directory (relative to calling repo root)'
+        required: true
+        type: string
+      baseline-path:
+        description: 'Path to baseline.json (relative to calling repo root)'
+        required: false
+        default: ''
+        type: string
+      opencode-version:
+        description: 'opencode-ai npm package version'
+        required: false
+        default: '1.2.26'
+        type: string
+      model:
+        description: 'Model identifier for eval runs'
+        required: false
+        default: 'google-vertex-anthropic/claude-opus-4-6@default'
+        type: string
+      timeout-minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        default: 60
+        type: number
+      profile:
+        description: 'Config profile name (maps to profiles/<name>.json)'
+        required: false
+        default: 'baseline'
+        type: string
+    outputs:
+      status:
+        description: 'pass or fail'
+        value: ${{ jobs.eval.outputs.status }}
+      composite-score:
+        description: 'Weighted composite quality score (0.0-1.0)'
+        value: ${{ jobs.eval.outputs.composite-score }}
+      total-cost:
+        description: 'Total cost in USD'
+        value: ${{ jobs.eval.outputs.total-cost }}
+      total-tokens:
+        description: 'Total input+output tokens'
+        value: ${{ jobs.eval.outputs.total-tokens }}
+    secrets:
+      gcp_project_id:
+        required: true
+      gcp_workload_identity_provider:
+        required: true
+
+jobs:
+  eval:
+    name: Run Eval
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      status: ${{ steps.run.outputs.status }}
+      composite-score: ${{ steps.run.outputs.composite-score }}
+      total-cost: ${{ steps.run.outputs.total-cost }}
+      total-tokens: ${{ steps.run.outputs.total-tokens }}
+    env:
+      CLAUDE_CODE_USE_VERTEX: "1"
+      CLOUD_ML_REGION: "global"
+      VERTEX_LOCATION: "global"
+      ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.gcp_project_id }}
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Checkout eval-infra (sparse — driver/ + profiles/ only)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: jflowers/eval-infra
+          path: .eval-infra
+          sparse-checkout: |
+            driver
+            profiles
+
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@ba79af03959ebeac9769e648f473a284504d9024 # v3.0.0
+        with:
+          project_id: ${{ secrets.gcp_project_id }}
+          workload_identity_provider: ${{ secrets.gcp_workload_identity_provider }}
+
+      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.2.1
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@a1800f9f0674c5e806e7f8df98e404ea3f62e5e6 # v2.0.2
+
+      - name: Install dependencies
+        run: bun install
+        working-directory: .eval-infra/driver
+
+      - name: Install opencode
+        run: npm install -g opencode-ai@${{ inputs.opencode-version }}
+
+      - name: Run eval
+        id: run
+        working-directory: .eval-infra/driver
+        run: |
+          bun run-eval.ts \
+            --fixtures "$GITHUB_WORKSPACE/${{ inputs.fixture-path }}" \
+            --baseline "$GITHUB_WORKSPACE/${{ inputs.baseline-path }}" \
+            --model "${{ inputs.model }}" \
+            --profile "${{ inputs.profile }}" \
+            --repo "${{ github.repository }}" \
+            --git-sha "${{ github.sha }}" \
+            --git-branch "${{ github.head_ref || github.ref_name }}" \
+            --output "$GITHUB_WORKSPACE/eval-out"
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eval-results
+          path: eval-out/
+          retention-days: 30

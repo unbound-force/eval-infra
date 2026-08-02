@@ -1,0 +1,7 @@
+{
+  "description": "Current production config (hashline, no DCP)",
+  "config_override": {
+    "model": "google-vertex-anthropic/claude-opus-4-6@default",
+    "plugin": ["@angdrew/opencode-hashline-plugin"]
+  }
+}

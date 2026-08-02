@@ -12,7 +12,7 @@
  *     --output ../eval-out
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs"
 import { join, dirname, basename, resolve } from "node:path"
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -861,7 +861,7 @@ async function main(): Promise<void> {
 
   // Baseline comparison (T019)
   let comparisonSummary: ComparisonSummary | undefined
-  if (args.baseline && existsSync(args.baseline)) {
+  if (args.baseline && existsSync(args.baseline) && statSync(args.baseline).isFile()) {
     log("Running baseline comparison...")
     const baselineData = loadBaseline(args.baseline)
     comparisonSummary = compareAllRuns(runs, baselineData, {

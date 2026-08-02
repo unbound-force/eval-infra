@@ -50,6 +50,9 @@ export class TokenCapture {
     tool_calls_count: 0,
   }
 
+  /** Track processed message IDs to avoid double-counting */
+  private seenMessageIds = new Set<string>()
+
   /** Per-session cumulative totals from session.updated events */
   private sessionTotals = new Map<string, {
     cost: number
@@ -93,21 +96,29 @@ export class TokenCapture {
 
       case "message.updated": {
         // message.updated with a `finish` field means a model turn completed.
-        // Count turns and tool calls from completed assistant messages.
+        // These events carry per-message token/cost data.
         const info = props?.info
         if (!info || info.role !== "assistant" || !info.finish) break
 
-        // A completed message = one turn
-        // But message.updated fires twice for the same message (once with
-        // finish, once with time.completed). Only count the first one
-        // by checking that time.completed is set (final update).
+        // Only process the final update (time.completed is set).
+        // message.updated fires multiple times per message — once with
+        // finish, then again with time.completed.
         if (info.time?.completed) {
           this.data.turns += 1
           if (info.finish === "tool-calls") {
-            // Count each tool-calling turn — the actual tool call count
-            // isn't directly available per-event, but each tool-calls
-            // finish represents at least one tool invocation batch.
             this.data.tool_calls_count += 1
+          }
+
+          // Extract per-message token data as a fallback/supplement.
+          // Track per-message ID to avoid double-counting.
+          const msgId = info.id as string | undefined
+          if (msgId && !this.seenMessageIds.has(msgId)) {
+            this.seenMessageIds.add(msgId)
+            this.data.cost_usd += toNumber(info.cost)
+            this.data.input_tokens += toNumber(info.tokens?.input)
+            this.data.output_tokens += toNumber(info.tokens?.output)
+            this.data.cache_read_tokens += toNumber(info.tokens?.cache?.read)
+            this.data.cache_creation_tokens += toNumber(info.tokens?.cache?.write)
           }
         }
         break
@@ -118,24 +129,35 @@ export class TokenCapture {
     }
   }
 
-  /** Return accumulated data, computing token/cost totals from all sessions. */
+  /** Return accumulated data using best available source for token/cost data. */
   getSnapshot(): TokenData {
-    // Sum token/cost totals across all sessions
-    let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0
+    // Session-level totals (from session.updated — newer opencode versions)
+    let sesInput = 0, sesOutput = 0, sesCacheRead = 0, sesCacheWrite = 0, sesCost = 0
     for (const s of this.sessionTotals.values()) {
-      input += s.input
-      output += s.output
-      cacheRead += s.cacheRead
-      cacheWrite += s.cacheWrite
-      cost += s.cost
+      sesInput += s.input
+      sesOutput += s.output
+      sesCacheRead += s.cacheRead
+      sesCacheWrite += s.cacheWrite
+      sesCost += s.cost
     }
 
+    // Message-level totals (from message.updated — works across versions)
+    const msgInput = this.data.input_tokens
+    const msgOutput = this.data.output_tokens
+    const msgCacheRead = this.data.cache_read_tokens
+    const msgCacheWrite = this.data.cache_creation_tokens
+    const msgCost = this.data.cost_usd
+
+    // Use whichever source has data (prefer session-level if both have data)
+    const hasSessionData = sesCost > 0 || sesInput > 0 || sesOutput > 0
+    const hasMessageData = msgCost > 0 || msgInput > 0 || msgOutput > 0
+
     return {
-      input_tokens: input,
-      output_tokens: output,
-      cache_read_tokens: cacheRead,
-      cache_creation_tokens: cacheWrite,
-      cost_usd: cost,
+      input_tokens: hasSessionData ? sesInput : msgInput,
+      output_tokens: hasSessionData ? sesOutput : msgOutput,
+      cache_read_tokens: hasSessionData ? sesCacheRead : msgCacheRead,
+      cache_creation_tokens: hasSessionData ? sesCacheWrite : msgCacheWrite,
+      cost_usd: hasSessionData ? sesCost : msgCost,
       turns: this.data.turns,
       tool_calls_count: this.data.tool_calls_count,
     }
@@ -153,6 +175,7 @@ export class TokenCapture {
       tool_calls_count: 0,
     }
     this.sessionTotals.clear()
+    this.seenMessageIds.clear()
   }
 }
 

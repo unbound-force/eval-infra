@@ -1,0 +1,36 @@
+# Self-test workflow — runs eval against the driver-smoke fixture
+# using the reusable workflow from this same repo.
+#
+# Triggers:
+# - push to main: validate changes don't break eval
+# - pull_request to main: CI gate for PRs
+# - weekly cron (Monday 6am UTC): drift monitoring — detects
+#   gradual cost/quality changes even without code changes,
+#   since model behavior can shift over time.
+
+name: Self Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Monday 6am UTC — drift monitoring
+    - cron: '0 6 * * 1'
+
+permissions: {}
+
+jobs:
+  eval:
+    uses: ./.github/workflows/reusable_opencode_eval.yml
+    permissions:
+      contents: read
+      id-token: write
+    secrets:
+      gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
+      gcp_workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+    with:
+      fixture-path: .eval/fixtures
+      opencode-version: '1.2.26'
+      timeout-minutes: 30

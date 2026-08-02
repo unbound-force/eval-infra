@@ -1,0 +1,7 @@
+{
+  "description": "+DCP (nudgeForce: strong, maxContextLimit: 60000)",
+  "config_override": {
+    "model": "google-vertex-anthropic/claude-opus-4-6@default",
+    "plugin": ["@angdrew/opencode-hashline-plugin", "@tarquinen/opencode-dcp"]
+  }
+}

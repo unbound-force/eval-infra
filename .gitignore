@@ -22,3 +22,9 @@
 .unbound-force/
 .muti-mind/
 .mx-f/
+
+# eval-infra
+driver/node_modules/
+driver/dist/
+*.db
+eval-out/

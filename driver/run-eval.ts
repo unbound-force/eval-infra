@@ -45,6 +45,14 @@ import {
 } from "./baseline.ts"
 import { judge } from "./judge.ts"
 import { formatDryRunTable, type DryRunEntry } from "./dry-run-utils.ts"
+import {
+  evaluateAssertions,
+  loadAssertions,
+  parseStubLog,
+  type AssertionResult,
+} from "./assertions.ts"
+import { extractTrajectory, type Trajectory } from "./trajectory.ts"
+import { gitStatus, prepareWorkdir, readStubLog, withEnv } from "./workdir.ts"
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -56,6 +64,15 @@ interface TaskConfig {
   exec_mode: string
   command: string
   timeout_seconds: number
+  /** Optional setup script (relative to the fixture) that builds a fresh workdir. */
+  setup?: string
+}
+
+/** A fixture's run record plus its deterministic assertion results. */
+interface FixtureOutcome {
+  run: Run
+  /** null when the fixture has no assertions.yaml. */
+  assertions: AssertionResult[] | null
 }
 
 /** Parsed answers.yaml fixture structure. */
@@ -83,6 +100,14 @@ interface CliArgs {
   dryRun: boolean
   epsilon: number
   tolerance: number
+  /** Who answers the command's questions; see DriverOptions.answerer. */
+  answerer: "scripted" | "plugin"
+  /** Agent to run commands as; empty for opencode's default. */
+  agent: string
+  /** Regex selecting fixtures by directory name; empty for all. */
+  only: string
+  /** Tool ids the server must offer; see DriverOptions.requiredTools. */
+  requireTools: string[]
 }
 
 /** Profile configuration loaded from profiles/<name>.json. */
@@ -115,6 +140,10 @@ function parseArgs(argv: string[]): CliArgs {
     dryRun: false,
     epsilon: 0.10,
     tolerance: 0.05,
+    answerer: "scripted",
+    agent: "",
+    only: "",
+    requireTools: [],
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -169,6 +198,22 @@ function parseArgs(argv: string[]): CliArgs {
         break
       case "--tolerance":
         args.tolerance = Number(next) || args.tolerance
+        i++
+        break
+      case "--answerer":
+        args.answerer = next === "plugin" ? "plugin" : "scripted"
+        i++
+        break
+      case "--agent":
+        args.agent = next ?? ""
+        i++
+        break
+      case "--only":
+        args.only = next ?? ""
+        i++
+        break
+      case "--require-tools":
+        args.requireTools = (next ?? "").split(",").filter(Boolean)
         i++
         break
       case "--export-baseline":
@@ -267,7 +312,7 @@ async function executeFixture(
   args: CliArgs,
   db: ReturnType<typeof initDb>,
   profileOverride?: string,
-): Promise<Run> {
+): Promise<FixtureOutcome> {
   const activeProfile = profileOverride ?? args.profile
   const fixtureName = basename(fixtureDir)
   const runId = randomUUID()
@@ -327,9 +372,19 @@ async function executeFixture(
   // Collect transcript for judge evaluation
   let transcript = ""
 
+  // Prepare the project directory — a fresh workdir when the fixture
+  // declares a setup script, otherwise the fixture directory itself
+  // EVAL_MODEL lets setup pin config (e.g. subagent model matrices) to the run's model
+  const prepared = prepareWorkdir(fixtureDir, task.setup, (msg) => log(`[${fixtureName}] ${msg}`), {
+    EVAL_MODEL: args.model,
+  })
+
   // Create and start driver
   const driver = new OpencodeDriver({
-    projectDir: fixtureDir,
+    projectDir: prepared.projectDir,
+    answerer: args.answerer,
+    agent: args.agent || undefined,
+    requiredTools: args.requireTools,
     onEvent: (event: any) => {
       tokenCapture.handleEvent(event)
       // Capture assistant messages for judge transcript
@@ -344,8 +399,11 @@ async function executeFixture(
 
   let exitStatus = "success"
   let errorMessage: string | null = null
+  let trajectory: Trajectory | null = null
   const startTime = Date.now()
 
+  // Server env carries PATH stubs and setup variables
+  await withEnv(prepared.env, async () => {
   try {
     log(`[${fixtureName}] Starting driver...`)
     await driver.start()
@@ -361,12 +419,22 @@ async function executeFixture(
       prompt,
       answerCtx,
       commandTimeout,
+      args.model,
     )
 
     if (!result.success) {
-      exitStatus = result.reason?.includes("Timeout") ? "timeout" : "bail"
+      exitStatus = result.reason?.includes("Timeout") ? "timeout"
+        : result.reason?.startsWith("session error") ? "error"
+        : "bail"
       errorMessage = result.reason ?? "Command failed"
     }
+
+    trajectory = await driver.getTrajectory(sessionId)
+    log(`[${fixtureName}] Trajectory: ${trajectory.toolCalls.length} tool call(s) across ${trajectory.sessionCount} session(s)`)
+    // Full trajectory for offline analysis (cost per subagent, timing)
+    const trajDir = join(args.output, "trajectories")
+    mkdirSync(trajDir, { recursive: true })
+    writeFileSync(join(trajDir, `${fixtureName}-${runId}.json`), JSON.stringify({ ...trajectory, interactions: driver.interactions }, null, 2))
   } catch (err: unknown) {
     exitStatus = "error"
     errorMessage = err instanceof Error ? err.message : String(err)
@@ -374,15 +442,54 @@ async function executeFixture(
   } finally {
     await driver.stop()
   }
+  })
 
   const durationS = (Date.now() - startTime) / 1000
 
   // Capture workdir diff
-  const { diffText, diffBytes } = captureWorkdirDiff(fixtureDir)
+  const { diffText, diffBytes } = captureWorkdirDiff(prepared.projectDir)
 
-  // Get token snapshot
-  const tokens = tokenCapture.getSnapshot()
-  log(`[${fixtureName}] Tokens: cost=$${tokens.cost_usd.toFixed(4)} in=${tokens.input_tokens} out=${tokens.output_tokens} cache_r=${tokens.cache_read_tokens} cache_w=${tokens.cache_creation_tokens} turns=${tokens.turns} tools=${tokens.tool_calls_count}`)
+  // Deterministic assertions (assertions.yaml)
+  let assertionResults: AssertionResult[] | null = null
+  const assertionsPath = join(fixtureDir, "assertions.yaml")
+  if (existsSync(assertionsPath)) {
+    assertionResults = evaluateAssertions(loadAssertions(assertionsPath), {
+      trajectory: trajectory ?? extractTrajectory([]),
+      stubCalls: parseStubLog(readStubLog(prepared)),
+      workdirStatus: prepared.isolated ? gitStatus(prepared.projectDir) : null,
+      interactions: driver.interactions,
+    })
+    if (!trajectory) {
+      assertionResults.unshift({ label: "trajectory", passed: false, detail: "no trajectory captured" })
+    }
+    // Negative assertions pass vacuously when the agent never ran
+    if (exitStatus !== "success") {
+      assertionResults.unshift({ label: "run completed", passed: false, detail: `${exitStatus}: ${errorMessage ?? ""}` })
+    }
+    for (const r of assertionResults) {
+      log(`[${fixtureName}]   ${r.passed ? "PASS" : "FAIL"} ${r.label} — ${r.detail}`)
+    }
+    const failed = assertionResults.filter((r) => !r.passed)
+    if (failed.length > 0) {
+      const msg = `${failed.length}/${assertionResults.length} assertion(s) failed`
+      errorMessage = errorMessage ? `${errorMessage}; ${msg}` : msg
+    }
+  }
+
+  // Keep the workdir of a failing run for debugging
+  if (assertionResults?.some((r) => !r.passed) && prepared.isolated) {
+    log(`[${fixtureName}] Keeping workdir for inspection: ${prepared.projectDir}`)
+  } else {
+    prepared.cleanup()
+  }
+
+  // Token usage — prefer the persisted messages; the SSE stream misses
+  // the last message's totals because the driver stops on idle. Fall
+  // back to the event snapshot when no messages could be read.
+  const captured = trajectory as Trajectory | null
+  const fromMessages = captured !== null && captured.usage.turns > 0
+  const tokens = fromMessages ? captured.usage : tokenCapture.getSnapshot()
+  log(`[${fixtureName}] Tokens (${fromMessages ? "messages" : "events"}): cost=$${tokens.cost_usd.toFixed(4)} in=${tokens.input_tokens} out=${tokens.output_tokens} reasoning=${tokens.reasoning_tokens} cache_r=${tokens.cache_read_tokens} cache_w=${tokens.cache_creation_tokens} turns=${tokens.turns} tools=${tokens.tool_calls_count}`)
 
   // Run judge if rubric exists (T029)
   let compositeScore: number | null = null
@@ -435,6 +542,7 @@ async function executeFixture(
     tool_calls_count: tokens.tool_calls_count,
     input_tokens: tokens.input_tokens,
     output_tokens: tokens.output_tokens,
+    reasoning_tokens: tokens.reasoning_tokens,
     cache_read_tokens: tokens.cache_read_tokens,
     cache_creation_tokens: tokens.cache_creation_tokens,
     diff_bytes: diffBytes,
@@ -445,7 +553,7 @@ async function executeFixture(
   insertRun(db, run)
   log(`[${fixtureName}] Run ${runId} stored (${exitStatus})`)
 
-  return run
+  return { run, assertions: assertionResults }
 }
 
 // ── Summary generation ───────────────────────────────────────
@@ -457,11 +565,12 @@ async function executeFixture(
  * optional baseline comparison section, and optional drift indicators.
  */
 function generateSummary(
-  runs: Run[],
+  outcomes: FixtureOutcome[],
   args: CliArgs,
   comparisonSummary?: ComparisonSummary,
   db?: ReturnType<typeof initDb>,
 ): string {
+  const runs = outcomes.map((o) => o.run)
   const lines: string[] = []
 
   lines.push("# Eval Summary")
@@ -480,10 +589,10 @@ function generateSummary(
   lines.push("## Results")
   lines.push("")
   lines.push(
-    "| Fixture | Profile | Status | Cost ($) | Input Tokens | Output Tokens | Cache Read | Cache Create | Turns | Tool Calls | Duration (s) | Quality |",
+    "| Fixture | Profile | Status | Cost ($) | Input Tokens | Output Tokens | Reasoning Tokens | Cache Read | Cache Create | Turns | Tool Calls | Duration (s) | Quality |",
   )
   lines.push(
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
   )
 
   let totalCost = 0
@@ -495,13 +604,28 @@ function generateSummary(
       : "N/A"
 
     lines.push(
-      `| ${run.task_id} | ${run.profile_id} | ${run.exit_status} | ${cost.toFixed(4)} | ${run.input_tokens ?? 0} | ${run.output_tokens ?? 0} | ${run.cache_read_tokens ?? 0} | ${run.cache_creation_tokens ?? 0} | ${run.turns ?? 0} | ${run.tool_calls_count ?? 0} | ${(run.duration_s ?? 0).toFixed(1)} | ${quality} |`,
+      `| ${run.task_id} | ${run.profile_id} | ${run.exit_status} | ${cost.toFixed(4)} | ${run.input_tokens ?? 0} | ${run.output_tokens ?? 0} | ${run.reasoning_tokens ?? 0} | ${run.cache_read_tokens ?? 0} | ${run.cache_creation_tokens ?? 0} | ${run.turns ?? 0} | ${run.tool_calls_count ?? 0} | ${(run.duration_s ?? 0).toFixed(1)} | ${quality} |`,
     )
   }
 
   lines.push("")
   lines.push(`**Total Cost**: $${totalCost.toFixed(4)}`)
   lines.push("")
+
+  // Deterministic assertion results
+  const asserted = outcomes.filter((o) => o.assertions !== null)
+  if (asserted.length > 0) {
+    lines.push("## Assertions")
+    lines.push("")
+    lines.push("| Fixture | Result | Assertion | Detail |")
+    lines.push("| --- | --- | --- | --- |")
+    for (const o of asserted) {
+      for (const r of o.assertions!) {
+        lines.push(`| ${o.run.task_id} | ${r.passed ? "✅" : "❌"} | ${tableCell(r.label)} | ${tableCell(r.detail)} |`)
+      }
+    }
+    lines.push("")
+  }
 
   // Drift indicators (T032) — show delta from previous run when history exists
   if (db) {
@@ -737,12 +861,17 @@ async function executeDryRun(
 
 // ── Helpers ──────────────────────────────────────────────────
 
+/** Escape a value for a single markdown table cell. */
+function tableCell(value: string): string {
+  return value.replace(/\n/g, " ").replace(/\|/g, "\\|")
+}
+
 /** Capture the workdir diff via git diff. */
 function captureWorkdirDiff(
-  _fixtureDir: string,
+  projectDir: string,
 ): { diffText: string; diffBytes: number } {
   try {
-    const diff = execSync("git diff", { encoding: "utf-8", timeout: 10_000 })
+    const diff = execSync("git diff", { cwd: projectDir, encoding: "utf-8", timeout: 10_000 })
     return { diffText: diff, diffBytes: Buffer.byteLength(diff, "utf-8") }
   } catch {
     // No git repo or git diff failed — valid result per edge case spec
@@ -792,7 +921,8 @@ async function main(): Promise<void> {
   log(`Database initialized at ${dbPath}`)
 
   // Discover fixtures
-  const fixtureDirs = await discoverFixtures(args.fixtures)
+  const only = args.only ? new RegExp(args.only) : null
+  const fixtureDirs = (await discoverFixtures(args.fixtures)).filter((d) => !only || only.test(basename(d)))
   if (fixtureDirs.length === 0) {
     log(`No fixtures found in ${args.fixtures}`)
     process.exit(1)
@@ -821,7 +951,7 @@ async function main(): Promise<void> {
   const profilesToRun = args.profiles.length > 0 ? args.profiles : [args.profile]
 
   // Execute each fixture against each profile (T034 matrix mode)
-  const runs: Run[] = []
+  const outcomes: FixtureOutcome[] = []
   for (const profileName of profilesToRun) {
     // Load and apply profile for this iteration
     if (args.profiles.length > 0) {
@@ -839,18 +969,19 @@ async function main(): Promise<void> {
       const fixtureName = basename(fixtureDir)
       log(`\n── Fixture: ${fixtureName} (profile: ${profileName}) ──`)
 
-      const run = await executeFixture(
+      const outcome = await executeFixture(
         fixtureDir,
         args,
         db,
         args.profiles.length > 0 ? profileName : undefined,
       )
-      runs.push(run)
+      outcomes.push(outcome)
     }
   }
 
   // Clear profile env after execution
   clearProfile()
+  const runs = outcomes.map((o) => o.run)
 
   // Export baseline if requested (T020)
   if (args.exportBaseline) {
@@ -877,7 +1008,7 @@ async function main(): Promise<void> {
   }
 
   // Generate summary (includes drift indicators and profile matrix)
-  const summary = generateSummary(runs, args, comparisonSummary, db)
+  const summary = generateSummary(outcomes, args, comparisonSummary, db)
   const summaryPath = join(args.output, "eval-summary.md")
   writeFileSync(summaryPath, summary)
   log(`Summary written to ${summaryPath}`)
@@ -887,9 +1018,23 @@ async function main(): Promise<void> {
 
   log(`\nEval complete: ${runs.length} fixture(s) executed`)
 
+  // Write assertion results as a machine-readable artifact
+  const assertionReport = outcomes
+    .filter((o) => o.assertions !== null)
+    .map((o) => ({ task_id: o.run.task_id, run_id: o.run.run_id, results: o.assertions }))
+  if (assertionReport.length > 0) {
+    writeFileSync(join(args.output, "assertions.json"), JSON.stringify(assertionReport, null, 2))
+  }
+
   // Exit non-zero if any regression detected (T019)
   if (comparisonSummary?.overall === "fail") {
     log("REGRESSION DETECTED — exiting with code 1")
+    process.exit(1)
+  }
+
+  // Exit non-zero if any deterministic assertion failed
+  if (outcomes.some((o) => o.assertions?.some((r) => !r.passed))) {
+    log("ASSERTION FAILURE — exiting with code 1")
     process.exit(1)
   }
 

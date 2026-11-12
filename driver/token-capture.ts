@@ -22,6 +22,8 @@
 export interface TokenData {
   input_tokens: number
   output_tokens: number
+  /** Thinking tokens; opencode reports them separately from output. */
+  reasoning_tokens: number
   cache_read_tokens: number
   cache_creation_tokens: number
   cost_usd: number
@@ -43,6 +45,7 @@ export class TokenCapture {
   private data: TokenData = {
     input_tokens: 0,
     output_tokens: 0,
+    reasoning_tokens: 0,
     cache_read_tokens: 0,
     cache_creation_tokens: 0,
     cost_usd: 0,
@@ -58,6 +61,7 @@ export class TokenCapture {
     cost: number
     input: number
     output: number
+    reasoning: number
     cacheRead: number
     cacheWrite: number
     parentID: string | null
@@ -87,6 +91,7 @@ export class TokenCapture {
           cost: toNumber(info.cost),
           input: toNumber(info.tokens?.input),
           output: toNumber(info.tokens?.output),
+          reasoning: toNumber(info.tokens?.reasoning),
           cacheRead: toNumber(info.tokens?.cache?.read),
           cacheWrite: toNumber(info.tokens?.cache?.write),
           parentID: info.parentID ?? null,
@@ -117,6 +122,7 @@ export class TokenCapture {
             this.data.cost_usd += toNumber(info.cost)
             this.data.input_tokens += toNumber(info.tokens?.input)
             this.data.output_tokens += toNumber(info.tokens?.output)
+            this.data.reasoning_tokens += toNumber(info.tokens?.reasoning)
             this.data.cache_read_tokens += toNumber(info.tokens?.cache?.read)
             this.data.cache_creation_tokens += toNumber(info.tokens?.cache?.write)
           }
@@ -132,10 +138,11 @@ export class TokenCapture {
   /** Return accumulated data using best available source for token/cost data. */
   getSnapshot(): TokenData {
     // Session-level totals (from session.updated — newer opencode versions)
-    let sesInput = 0, sesOutput = 0, sesCacheRead = 0, sesCacheWrite = 0, sesCost = 0
+    let sesInput = 0, sesOutput = 0, sesReasoning = 0, sesCacheRead = 0, sesCacheWrite = 0, sesCost = 0
     for (const s of this.sessionTotals.values()) {
       sesInput += s.input
       sesOutput += s.output
+      sesReasoning += s.reasoning
       sesCacheRead += s.cacheRead
       sesCacheWrite += s.cacheWrite
       sesCost += s.cost
@@ -144,6 +151,7 @@ export class TokenCapture {
     // Message-level totals (from message.updated — works across versions)
     const msgInput = this.data.input_tokens
     const msgOutput = this.data.output_tokens
+    const msgReasoning = this.data.reasoning_tokens
     const msgCacheRead = this.data.cache_read_tokens
     const msgCacheWrite = this.data.cache_creation_tokens
     const msgCost = this.data.cost_usd
@@ -155,6 +163,7 @@ export class TokenCapture {
     return {
       input_tokens: hasSessionData ? sesInput : msgInput,
       output_tokens: hasSessionData ? sesOutput : msgOutput,
+      reasoning_tokens: hasSessionData ? sesReasoning : msgReasoning,
       cache_read_tokens: hasSessionData ? sesCacheRead : msgCacheRead,
       cache_creation_tokens: hasSessionData ? sesCacheWrite : msgCacheWrite,
       cost_usd: hasSessionData ? sesCost : msgCost,
@@ -168,6 +177,7 @@ export class TokenCapture {
     this.data = {
       input_tokens: 0,
       output_tokens: 0,
+      reasoning_tokens: 0,
       cache_read_tokens: 0,
       cache_creation_tokens: 0,
       cost_usd: 0,

@@ -18,6 +18,7 @@ import {
 } from "@opencode-ai/sdk/v2"
 import type { AnswerContext, AnswerResult } from "./answers.js"
 import { findAnswer } from "./answers.js"
+import { collectTrajectory, type Trajectory } from "./trajectory.js"
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -40,6 +41,48 @@ export interface DriverOptions {
    * - "json": structured JSON lines for machine consumption
    */
   logFormat?: "json" | "human"
+  /**
+   * Who answers the command's questions.
+   * - "scripted" (default): this driver, from answer patterns. Sessions get
+   *   allow-all permissions and asks from the root session are approved.
+   * - "plugin": a plugin inside opencode (auto-question). The driver only
+   *   records questions, runs under the configured permissions, and
+   *   rejects any permission ask from any session so none can hang.
+   */
+  answerer?: "scripted" | "plugin"
+  /** Agent to run commands as (default: opencode's default agent). */
+  agent?: string
+  /** How long a question may stay unanswered in plugin mode (default: 8 min). */
+  questionTimeoutMs?: number
+  /**
+   * Tool ids the server must offer, or start() fails. A plugin that fails
+   * to load is otherwise silent: it stays in the config and the run goes
+   * on without it, so check for a tool the plugin registers.
+   */
+  requiredTools?: string[]
+}
+
+/** A question the command asked, and how it was resolved. */
+export interface QuestionRecord {
+  requestID: string
+  sessionID: string
+  questions: Array<{ header: string; question: string; options: string[] }>
+  status: "pending" | "answered" | "rejected" | "unanswered"
+  answers: unknown
+  askedAt: number
+}
+
+/** A permission ask that configuration failed to decide. */
+export interface PermissionRecord {
+  sessionID: string
+  permission: string
+  patterns: string[]
+}
+
+/** What the session asked of its environment during a run. */
+export interface Interactions {
+  questions: QuestionRecord[]
+  permissionAsks: PermissionRecord[]
 }
 
 export interface CommandResult {
@@ -76,12 +119,21 @@ export class OpencodeDriver {
   private timeout: number
   private onEvent?: (event: any) => void
   private logFn: (msg: string) => void
+  private answerer: "scripted" | "plugin"
+  private agent?: string
+  private readonly requiredTools: string[]
+  private questionTimeoutMs: number
+  readonly interactions: Interactions = { questions: [], permissionAsks: [] }
 
   constructor(opts: DriverOptions) {
     this.projectDir = opts.projectDir
     this.port = opts.port ?? 4096
     this.timeout = opts.timeout ?? 30_000
     this.onEvent = opts.onEvent
+    this.answerer = opts.answerer ?? "scripted"
+    this.agent = opts.agent
+    this.requiredTools = opts.requiredTools ?? []
+    this.questionTimeoutMs = opts.questionTimeoutMs ?? 8 * 60_000
     // Configurable log format — "json" emits structured JSON lines,
     // "human" (default) emits timestamped human-readable lines.
     this.logFn = opts.logFormat === "json" ? logJson : logHuman
@@ -109,6 +161,22 @@ export class OpencodeDriver {
       throw new Error("Server health check failed")
     }
     this.logFn("Server healthy")
+
+    // Record what the config declares, so a run states its own environment.
+    // Declared is not loaded: requiredTools is what proves a plugin is live.
+    const config = await this.client.config.get()
+    const plugins = (config.data as any)?.plugin ?? []
+    this.logFn(`Plugins: ${plugins.map((p: unknown) => (Array.isArray(p) ? p[0] : p)).join(", ") || "none"}`)
+
+    const required = this.requiredTools
+    if (required.length > 0) {
+      const ids = (await this.client.tool.ids()).data ?? []
+      const missing = required.filter((tool) => !ids.includes(tool))
+      if (missing.length > 0) {
+        throw new Error(`Required tools not offered: ${missing.join(", ")}`)
+      }
+      this.logFn(`Required tools present: ${required.join(", ")}`)
+    }
   }
 
   async stop(): Promise<void> {
@@ -124,15 +192,16 @@ export class OpencodeDriver {
 
   async createSession(title: string): Promise<string> {
     const c = this.requireClient()
+    const scripted = this.answerer === "scripted"
     const res = await c.session.create({
       title,
-      permission: ALLOW_ALL_PERMISSIONS,
+      ...(scripted ? { permission: ALLOW_ALL_PERMISSIONS } : {}),
     })
     if (!res.data) {
       throw new Error(`Failed to create session: ${JSON.stringify(res.error)}`)
     }
     const id = (res.data as any).id as string
-    this.logFn(`Created session ${id} — "${title}" (all permissions allowed)`)
+    this.logFn(`Created session ${id} — "${title}" (${scripted ? "all permissions allowed" : "configured permissions"})`)
     return id
   }
 
@@ -156,10 +225,11 @@ export class OpencodeDriver {
     args: string,
     answerCtx: AnswerContext,
     commandTimeout = 15 * 60_000,
+    model?: string,
   ): Promise<CommandResult> {
     const c = this.requireClient()
 
-    this.logFn(`Sending /${command} ${args.slice(0, 80)}...`)
+    this.logFn(`Sending /${command} ${args.slice(0, 80)}...${model ? ` (model: ${model})` : ""}`)
 
     // Subscribe to SSE events — must create a new subscription per
     // command because the async generator is consumed and exhausted
@@ -173,6 +243,10 @@ export class OpencodeDriver {
       sessionID,
       command,
       arguments: args,
+      // Without an explicit model the session runs on opencode's
+      // configured default, not the model the run is fingerprinted with
+      ...(model ? { model } : {}),
+      ...(this.agent ? { agent: this.agent } : {}),
     }).catch((err: unknown) => {
       this.logFn(`Command error (non-fatal): ${err}`)
     })
@@ -194,6 +268,11 @@ export class OpencodeDriver {
           return { success: false, reason: `Timeout after ${commandTimeout / 1000}s` }
         }
 
+        if (this.answerer === "plugin") {
+          const expired = await this.expireQuestions(c)
+          if (expired) return { success: false, reason: expired }
+        }
+
         // Events have shape: { id, type, properties: { sessionID?, ... } }
         const evt = event as any
         const evtType = evt?.type as string | undefined
@@ -201,6 +280,12 @@ export class OpencodeDriver {
 
         // Skip heartbeats and non-session events
         if (!evtType || evtType === "server.heartbeat" || evtType === "server.connected") continue
+
+        // Subagents ask too, and nothing else would answer them
+        if (this.answerer === "plugin" && (evtType === "permission.asked" || evtType === "permission.v2.asked")) {
+          await this.rejectPermission(c, props)
+          continue
+        }
 
         // Filter to our session
         if (props.sessionID && props.sessionID !== sessionID) continue
@@ -232,9 +317,22 @@ export class OpencodeDriver {
             break
           }
 
+          case "session.error": {
+            // A provider/runtime error ends the turn with an idle status
+            // that would otherwise read as a successful completion
+            const err = props.error ?? {}
+            const message = err.data?.message ?? err.message ?? err.name ?? "unknown error"
+            this.logFn(`Session error: ${err.name ?? "Error"}: ${message}`)
+            return { success: false, reason: `session error: ${message}` }
+          }
+
           case "question.asked":
           case "question.v2.asked": {
             seenBusy = true
+            if (this.answerer === "plugin") {
+              this.recordQuestion(props)
+              break
+            }
             const result = await this.handleQuestion(c, props, answerCtx)
             if (result?.action === "bail") {
               return { success: false, reason: result.reason }
@@ -248,6 +346,14 @@ export class OpencodeDriver {
             await this.handlePermission(c, props)
             break
           }
+
+          case "question.replied":
+          case "question.v2.replied":
+          case "question.rejected":
+          case "question.v2.rejected": {
+            this.resolveQuestion(evtType, props)
+            break
+          }
         }
       }
     } finally {
@@ -255,6 +361,55 @@ export class OpencodeDriver {
     }
 
     return { success: false, reason: "SSE stream ended unexpectedly" }
+  }
+
+  // ── Plugin-answered mode ───────────────────────────────────
+
+  private recordQuestion(props: any): void {
+    const questions = (props.questions ?? []).map((q: any) => ({
+      header: String(q?.header ?? ""),
+      question: String(q?.question ?? ""),
+      options: (q?.options ?? []).map((o: any) => String(o?.label ?? "")),
+    }))
+    this.interactions.questions.push({
+      requestID: String(props.id ?? ""),
+      sessionID: String(props.sessionID ?? ""),
+      questions,
+      status: "pending",
+      answers: null,
+      askedAt: Date.now(),
+    })
+    const first = questions[0]
+    this.logFn(`Question: [${first?.header ?? ""}] ${(first?.question ?? "").slice(0, 200)}`)
+    if (first?.options.length) this.logFn(`  Options: ${first.options.join(", ")}`)
+  }
+
+  private resolveQuestion(evtType: string, props: any): void {
+    const record = this.interactions.questions.find((q) => q.requestID === props.requestID)
+    if (!record) return
+    record.status = evtType.endsWith("replied") ? "answered" : "rejected"
+    record.answers = props.answers ?? null
+    this.logFn(`Question ${record.status}: ${JSON.stringify(record.answers)}`)
+  }
+
+  /** Reject questions the plugin left to a human; none is coming. */
+  private async expireQuestions(c: OpencodeClient): Promise<string | null> {
+    const now = Date.now()
+    for (const record of this.interactions.questions) {
+      if (record.status !== "pending" || now - record.askedAt < this.questionTimeoutMs) continue
+      record.status = "unanswered"
+      await c.question.reject({ requestID: record.requestID }).catch(() => undefined)
+      return `Question unanswered after ${this.questionTimeoutMs / 1000}s: ${record.questions[0]?.header ?? ""}`
+    }
+    return null
+  }
+
+  private async rejectPermission(c: OpencodeClient, props: any): Promise<void> {
+    const permission = String(props.permission ?? "unknown")
+    const patterns: string[] = props.patterns ?? []
+    this.interactions.permissionAsks.push({ sessionID: String(props.sessionID ?? ""), permission, patterns })
+    this.logFn(`Permission ask rejected: ${permission} (${patterns.join(", ")})`)
+    if (props.id) await c.permission.reply({ requestID: props.id, reply: "reject" })
   }
 
   // ── Question handling ──────────────────────────────────────
@@ -330,6 +485,17 @@ export class OpencodeDriver {
       requestID,
       reply: "once",
     })
+  }
+
+  // ── Trajectory ─────────────────────────────────────────────
+
+  /**
+   * Read the persisted tool calls and assistant text for a session
+   * and all of its descendant sessions. Call after runCommand returns
+   * and before stop().
+   */
+  async getTrajectory(sessionID: string): Promise<Trajectory> {
+    return collectTrajectory(this.requireClient(), sessionID)
   }
 
   // ── Helpers ────────────────────────────────────────────────

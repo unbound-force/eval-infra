@@ -1,0 +1,6 @@
+# eval-infra code ownership
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# The team resolves once the repo is in the unbound-force org and
+# overlords has write access (unbound-force/.github#72).
+* @unbound-force/overlords
+.github/ @unbound-force/overlords

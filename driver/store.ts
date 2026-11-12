@@ -38,6 +38,7 @@ export interface Run {
   tool_calls_count: number | null
   input_tokens: number | null
   output_tokens: number | null
+  reasoning_tokens: number | null
   cache_read_tokens: number | null
   cache_creation_tokens: number | null
   diff_bytes: number | null
@@ -96,8 +97,15 @@ export function initDb(dbPath: string): Database {
     cache_read_tokens     INTEGER,
     cache_creation_tokens INTEGER,
     diff_bytes            INTEGER,
-    workdir_diff          TEXT
+    workdir_diff          TEXT,
+    reasoning_tokens      INTEGER
   )`)
+
+  // Databases created before reasoning_tokens existed lack the column
+  const columns = db.prepare(`PRAGMA table_info(runs)`).all() as Array<{ name: string }>
+  if (!columns.some((c) => c.name === "reasoning_tokens")) {
+    db.exec(`ALTER TABLE runs ADD COLUMN reasoning_tokens INTEGER`)
+  }
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_fingerprint ON runs(fingerprint)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_timestamp ON runs(timestamp)`)
@@ -125,14 +133,16 @@ export function insertRun(db: Database, run: Run): void {
       model, opencode_version, exit_status, error_message,
       composite_score, scores_json, cost_usd, duration_s,
       turns, tool_calls_count, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, diff_bytes, workdir_diff
+      cache_read_tokens, cache_creation_tokens, diff_bytes, workdir_diff,
+      reasoning_tokens
     ) VALUES (
       $run_id, $timestamp, $fingerprint, $repo, $git_sha, $git_branch,
       $command_name, $task_id, $task_version, $rubric_version, $profile_id,
       $model, $opencode_version, $exit_status, $error_message,
       $composite_score, $scores_json, $cost_usd, $duration_s,
       $turns, $tool_calls_count, $input_tokens, $output_tokens,
-      $cache_read_tokens, $cache_creation_tokens, $diff_bytes, $workdir_diff
+      $cache_read_tokens, $cache_creation_tokens, $diff_bytes, $workdir_diff,
+      $reasoning_tokens
     )
   `)
   // bun:sqlite named parameters require $ prefix on keys

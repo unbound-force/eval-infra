@@ -199,44 +199,35 @@ export async function callJudgeModel(
     }
     const sessionId = (sessionRes.data as any).id as string
 
-    // Send the prompt and collect the response
-    let responseText = ""
-    const sseResult = await client.event.subscribe()
-
-    client.session.command({
-      sessionID: sessionId,
-      command: "chat",
-      arguments: prompt,
-    }).catch(() => {
-      // Non-fatal — we read from SSE
-    })
-
-    let seenBusy = false
-    const deadline = Date.now() + 120_000
-
-    for await (const event of sseResult.stream) {
-      if (Date.now() > deadline) break
-
-      const evt = event as any
-      const evtType = evt?.type as string | undefined
-      const props = evt?.properties ?? {}
-
-      if (!evtType) continue
-      if (evtType === "server.heartbeat" || evtType === "server.connected") continue
-      if (props.sessionID && props.sessionID !== sessionId) continue
-
-      if (evtType === "session.status") {
-        const statusType = props.status?.type
-        if (statusType === "busy") seenBusy = true
-        if (statusType === "idle" && seenBusy) break
-      }
-      if (evtType === "session.idle" && seenBusy) break
-
-      // Capture assistant text
-      if (evtType === "message.part" || evtType === "assistant.message") {
-        responseText += props.content ?? props.text ?? ""
-      }
+    // session.prompt returns once the reply is complete, with its parts.
+    // The model goes as provider/model; opencode's model IDs can contain
+    // "/" too, so only the first one splits them.
+    const slash = model.indexOf("/")
+    if (slash <= 0) throw new Error(`Judge model must be provider/model, got: ${model}`)
+    const timeoutMs = 120_000
+    const reply = await Promise.race([
+      client.session.prompt({
+        sessionID: sessionId,
+        model: { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) },
+        tools: { "*": false },
+        parts: [{ type: "text", text: prompt }],
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Judge timed out after ${timeoutMs / 1000}s`)), timeoutMs).unref?.(),
+      ),
+    ])
+    if (!reply.data) {
+      throw new Error(`Judge prompt failed: ${JSON.stringify(reply.error)}`)
     }
+    const info = reply.data.info as any
+    if (info?.error) {
+      throw new Error(`Judge model error: ${JSON.stringify(info.error)}`)
+    }
+    const responseText = reply.data.parts
+      .filter((part: any) => part.type === "text" && !part.synthetic)
+      .map((part: any) => part.text as string)
+      .join("")
+    if (!responseText.trim()) throw new Error("Judge returned no text")
 
     return parseJudgeResponse(responseText, weights)
   } finally {

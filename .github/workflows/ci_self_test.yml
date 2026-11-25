@@ -24,9 +24,13 @@ permissions: {}
 jobs:
   eval:
     uses: ./.github/workflows/reusable_opencode_eval.yml
+    # A called workflow's jobs get no more than this grants, and GitHub
+    # refuses to start the run (startup_failure) when one asks for more:
+    # post-comment needs pull-requests: write to comment on the PR.
     permissions:
       contents: read
       id-token: write
+      pull-requests: write
     secrets:
       gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
       gcp_workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}

@@ -7,7 +7,11 @@
 # Usage in consumer repo:
 #   jobs:
 #     eval:
-#       uses: jflowers/eval-infra/.github/workflows/reusable_opencode_eval.yml@main
+#       uses: unbound-force/eval-infra/.github/workflows/reusable_opencode_eval.yml@main
+#       permissions:
+#         contents: read
+#         id-token: write
+#         pull-requests: write   # post-comment; without it the run won't start
 #       with:
 #         fixture-path: .eval/fixtures
 #       secrets:
@@ -89,10 +93,13 @@ jobs:
       - name: Checkout calling repo
         uses: actions/checkout@v4
 
+      # In eval-infra's own runs, check out the commit under test, so a PR's
+      # self test runs that PR's driver; other repos get eval-infra's main.
       - name: Checkout eval-infra (sparse — driver/ + profiles/ only)
         uses: actions/checkout@v4
         with:
-          repository: jflowers/eval-infra
+          repository: unbound-force/eval-infra
+          ref: ${{ github.repository == 'unbound-force/eval-infra' && github.sha || '' }}
           path: .eval-infra
           sparse-checkout: |
             driver
@@ -120,15 +127,23 @@ jobs:
       - name: Run eval
         id: run
         working-directory: .eval-infra/driver
+        # Through env, not ${{ }} in the script: a PR's branch name is
+        # attacker-chosen and would otherwise be pasted into the shell.
+        env:
+          FIXTURE_PATH: ${{ inputs.fixture-path }}
+          BASELINE_PATH: ${{ inputs.baseline-path }}
+          MODEL: ${{ inputs.model }}
+          PROFILE: ${{ inputs.profile }}
+          GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           bun run-eval.ts \
-            --fixtures "$GITHUB_WORKSPACE/${{ inputs.fixture-path }}" \
-            --baseline "$GITHUB_WORKSPACE/${{ inputs.baseline-path }}" \
-            --model "${{ inputs.model }}" \
-            --profile "${{ inputs.profile }}" \
-            --repo "${{ github.repository }}" \
-            --git-sha "${{ github.sha }}" \
-            --git-branch "${{ github.head_ref || github.ref_name }}" \
+            --fixtures "$GITHUB_WORKSPACE/$FIXTURE_PATH" \
+            --baseline "$GITHUB_WORKSPACE/$BASELINE_PATH" \
+            --model "$MODEL" \
+            --profile "$PROFILE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --git-sha "$GITHUB_SHA" \
+            --git-branch "$GIT_BRANCH" \
             --output "$GITHUB_WORKSPACE/eval-out"
 
       - name: Write job summary

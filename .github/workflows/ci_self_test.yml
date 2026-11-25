@@ -7,6 +7,7 @@
 # - weekly cron (Monday 6am UTC): drift monitoring — detects
 #   gradual cost/quality changes even without code changes,
 #   since model behavior can shift over time.
+# - workflow_dispatch: run it by hand
 
 name: Self Test
 
@@ -18,6 +19,7 @@ on:
   schedule:
     # Weekly Monday 6am UTC — drift monitoring
     - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 permissions: {}
 

@@ -1,0 +1,44 @@
+# CI: the driver's unit tests and typecheck on every pull request.
+#
+# ci_self_test.yml runs a real eval, which needs GCP credentials and model
+# calls; this is the cheap check every PR (Dependabot's too, which gets no
+# secrets) can pass. "Test" is a required check on main (safe-settings in
+# unbound-force/.github), so nothing merges, by hand or by gh-hud's
+# auto-merge, until it passes.
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: driver
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test

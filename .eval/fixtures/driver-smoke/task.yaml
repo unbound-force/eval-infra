@@ -2,5 +2,5 @@ task_id: driver-smoke
 task_version: "1"
 description: "Smoke test for eval driver"
 exec_mode: interactive
-command: help
+command: smoke
 timeout_seconds: 120

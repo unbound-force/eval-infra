@@ -7,7 +7,7 @@ weights:
 ---
 
 ## completeness
-Does the output include helpful information about available commands?
+Does the output answer the question?
 
 ## correctness
-Is the information accurate and well-formatted?
+Is the answer accurate and brief (one or two sentences)?

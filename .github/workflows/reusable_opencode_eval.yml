@@ -33,9 +33,9 @@ on:
         default: ''
         type: string
       opencode-version:
-        description: 'opencode-ai npm package version'
+        description: 'opencode-ai npm package version; keep it at the driver SDK version (driver/bun.lock)'
         required: false
-        default: '1.2.26'
+        default: '1.18.11'
         type: string
       model:
         description: 'Model identifier for eval runs'

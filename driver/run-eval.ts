@@ -1038,6 +1038,18 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // Exit non-zero if any fixture didn't finish (timeout, error, bail): a
+  // run that never got a response has nothing to compare or assert, and
+  // must not pass as a clean eval.
+  const unfinished = runs.filter((r) => r.exit_status !== "success")
+  if (unfinished.length > 0) {
+    for (const r of unfinished) {
+      log(`  ${r.task_id} (${r.profile_id}): ${r.exit_status}${r.error_message ? ` — ${r.error_message}` : ""}`)
+    }
+    log(`${unfinished.length} FIXTURE(S) DID NOT FINISH — exiting with code 1`)
+    process.exit(1)
+  }
+
   process.exit(0)
 }
 

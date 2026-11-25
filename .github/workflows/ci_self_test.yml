@@ -38,5 +38,8 @@ jobs:
       gcp_workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
     with:
       fixture-path: .eval/fixtures
-      opencode-version: '1.2.26'
+      # Match driver/'s @opencode-ai/sdk (bun.lock): the SDK reads the server's
+      # events, and a 1.2.x server sent none it understood (every fixture
+      # timed out).
+      opencode-version: '1.18.11'
       timeout-minutes: 30

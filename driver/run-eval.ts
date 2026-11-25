@@ -491,7 +491,7 @@ async function executeFixture(
         rubricPath,
         // The root session's assistant text, read from its messages after
         // the run: the SSE stream carries no event with the reply's text.
-        transcript: trajectory?.text ?? "",
+        transcript: (trajectory as Trajectory | null)?.text ?? "",
         workdirDiff: diffText,
         model: args.model,
       })

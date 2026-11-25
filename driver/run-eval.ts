@@ -369,9 +369,6 @@ async function executeFixture(
   // Create token capture
   const tokenCapture = new TokenCapture()
 
-  // Collect transcript for judge evaluation
-  let transcript = ""
-
   // Prepare the project directory — a fresh workdir when the fixture
   // declares a setup script, otherwise the fixture directory itself
   // EVAL_MODEL lets setup pin config (e.g. subagent model matrices) to the run's model
@@ -385,15 +382,7 @@ async function executeFixture(
     answerer: args.answerer,
     agent: args.agent || undefined,
     requiredTools: args.requireTools,
-    onEvent: (event: any) => {
-      tokenCapture.handleEvent(event)
-      // Capture assistant messages for judge transcript
-      const evtType = event?.type as string | undefined
-      const props = event?.properties ?? {}
-      if (evtType === "message.part" || evtType === "assistant.message") {
-        transcript += props.content ?? props.text ?? ""
-      }
-    },
+    onEvent: (event: any) => tokenCapture.handleEvent(event),
     logFormat: "human",
   })
 
@@ -500,7 +489,9 @@ async function executeFixture(
       log(`[${fixtureName}] Running judge evaluation...`)
       const judgeResult = await judge({
         rubricPath,
-        transcript,
+        // The root session's assistant text, read from its messages after
+        // the run: the SSE stream carries no event with the reply's text.
+        transcript: trajectory?.text ?? "",
         workdirDiff: diffText,
         model: args.model,
       })

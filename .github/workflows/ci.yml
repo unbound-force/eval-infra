@@ -2,9 +2,10 @@
 #
 # ci_self_test.yml runs a real eval, which needs GCP credentials and model
 # calls; this is the cheap check every PR (Dependabot's too, which gets no
-# secrets) can pass. "Test" is a required check on main (safe-settings in
+# secrets) can pass. "CI OK" is the required check on main (safe-settings in
 # unbound-force/.github), so nothing merges, by hand or by gh-hud's
-# auto-merge, until it passes.
+# auto-merge, until it passes. Chore PRs (Dewey learnings, gh-hud toolkit
+# rollouts) skip Test: see the scope job.
 name: CI
 
 on:
@@ -20,8 +21,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # code == 'false' only for PRs that touch nothing but Dewey learnings
+  # or a gh-hud toolkit rollout's .opencode/ files.
+  scope:
+    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # main, after v0.11.0
+    permissions:
+      contents: read
+
   test:
     name: Test
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -42,3 +52,29 @@ jobs:
 
       - name: Unit tests
         run: bun test
+
+  # Required check. Passes only when scope succeeded and Test ran and
+  # passed (code PRs) or was skipped (chore PRs). A skipped job counts as
+  # passing, so a failed scope job must fail here.
+  ci-ok:
+    name: CI OK
+    needs: [scope, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check needed jobs
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          CODE: ${{ needs.scope.outputs.code }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "scope=$SCOPE code=$CODE test=$TEST"
+          [ "$SCOPE" = success ] || { echo "::error::scope: $SCOPE"; exit 1; }
+          case "$CODE" in
+            true) want=success ;;
+            false) want=skipped ;;
+            *) echo "::error::scope code '$CODE'"; exit 1 ;;
+          esac
+          [ "$TEST" = "$want" ] || { echo "::error::Test: $TEST, want $want"; exit 1; }
+          echo "CI passed."

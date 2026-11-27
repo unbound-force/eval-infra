@@ -24,7 +24,17 @@ on:
 permissions: {}
 
 jobs:
+  # code == 'false' only for PRs that touch nothing but Dewey learnings
+  # or a gh-hud toolkit rollout's .opencode/ files. Pushes, the
+  # schedule and manual runs are always 'true'.
+  scope:
+    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # main, after v0.11.0
+    permissions:
+      contents: read
+
   eval:
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     uses: ./.github/workflows/reusable_opencode_eval.yml
     # A called workflow's jobs get no more than this grants, and GitHub
     # refuses to start the run (startup_failure) when one asks for more:

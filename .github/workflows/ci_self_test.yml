@@ -28,7 +28,7 @@ jobs:
   # or a gh-hud toolkit rollout's .opencode/ files. Pushes, the
   # schedule and manual runs are always 'true'.
   scope:
-    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # main, after v0.11.0
+    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # v0.12.0
     permissions:
       contents: read
 
